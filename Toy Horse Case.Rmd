@@ -1,0 +1,301 @@
+---
+title: "Case 3 Toy horse"
+teammates: Hector Abreu, Ying Wang, Geng Luo, Yunjiao Liu, Hairong Wang
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load data
+```{r}
+rm(list = ls())
+load("~/Desktop/UR/Spring A/GBA424 Analytics Design and Applications/Case3 Toy horse conjoint exp/GBA424 - Toy Horse Case Data.Rdata")
+```
+
+#### Part A ####
+## A.1)Produce part-utilities to pass to part B
+```{r}
+temp = unique(conjointData$ID)
+##Loop over individuals by ID: range 1 to 200, can pass the entire Conjoint Data Frame
+##Create a lm for where ID = i ,
+##Store lm object in a new dataFrame
+
+###Arguments:
+## data - conjoint data frame
+## IDs - vector of IDs for individuals
+###Returns:
+## dataframe of individual ID and linear regression model for each individual
+individualRegs = function(data,IDs){
+    K = length(IDs)
+    LMres = list()
+    df = data.frame()
+    for (i in 1:K){
+        res =lm(ratings~factor(price)+factor(size)+factor(motion)+factor(style),data=conjointData[(conjointData[,1]==i),])
+        M = length(res$coefficients)
+        coeffs = list()
+        for (j in 1:M){
+            coeffs = append(coeffs,res$coefficients[[j]])
+        }
+        coeffs = c(coeffs)
+        df = rbind(df, coeffs)
+    }
+    colnames(df) = c('Intercept','PriceLow','SizeBig','MotionRocking','StyleGlamour')
+    return(df)
+}
+
+partutility = individualRegs(conjointData, temp)   
+```
+
+## A.2)Produce predictions for missing profiles to pass to part D
+```{r}
+for (i in 1:200){
+    res =lm(ratings~factor(price)+factor(size)+factor(motion)+factor(style),data=conjointData[(conjointData[,1]==i),])
+    conjointData[(conjointData[,1]==i),][3,3] = predict(res,conjointData[(conjointData[,1]==i),][3,4:7])
+    conjointData[(conjointData[,1]==i),][6,3] = predict(res,conjointData[(conjointData[,1]==i),][6,4:7])
+    conjointData[(conjointData[,1]==i),][10,3] = predict(res,conjointData[(conjointData[,1]==i),][10,4:7])
+    conjointData[(conjointData[,1]==i),][16,3] = predict(res,conjointData[(conjointData[,1]==i),][16,4:7])
+}
+```
+
+#### Part B ####
+## B.1)Use cluster analysis on the part-utilities 
+```{r}
+require("cluster")
+require("fpc")
+require("factoextra")
+require("gridExtra")
+library(cluster)
+library(fpc)
+library(factoextra)
+library(gridExtra)
+
+
+##Evaluate number of clusters to use on data with visualizations
+##Arguments: 
+##  toClust, the data to do kmeans cluster analysis
+##  maxClusts=15, the max number of clusters to consider
+##  seed, the random number to initialize the clusters
+##  iter.max, the max iterations for clustering algorithms to use
+##  nstart, the number of starting points to consider
+##Results:
+##  a list of weighted sum of squares and the pamk output including optimal number of clusters (nc)
+##  to create visualizations need to print tmp
+clustTest = function(toClust,print=TRUE,scale=TRUE,maxClusts=15,seed=12345,nstart=20,iter.max=100){
+  if(scale){ toClust = scale(toClust);}
+  set.seed(seed);   # set random number seed before doing cluster analysis
+  wss <- (nrow(toClust)-1)*sum(apply(toClust,2,var))
+  for (i in 2:maxClusts) wss[i] <- sum(kmeans(toClust,centers=i,nstart=nstart,iter.max=iter.max)$withinss)
+  ##gpw essentially does the following plot using wss above. 
+  #plot(1:maxClusts, wss, type="b", xlab="Number of Clusters",ylab="Within groups sum of squares")
+  gpw = fviz_nbclust(toClust,kmeans,method="wss",iter.max=iter.max,nstart=nstart,k.max=maxClusts) #alternative way to get wss elbow chart.
+  pm1 = pamk(toClust,scaling=TRUE)
+  ## pm1$nc indicates the optimal number of clusters based on 
+  ## lowest average silhoutte score (a measure of quality of clustering)
+  #alternative way that presents it visually as well.
+  gps = fviz_nbclust(toClust,kmeans,method="silhouette",iter.max=iter.max,nstart=nstart,k.max=maxClusts) 
+  if(print){
+    grid.arrange(gpw,gps, nrow = 1)
+  }
+  list(wss=wss,pm1=pm1$nc,gpw=gpw,gps=gps)
+}
+##Runs a set of clusters as kmeans
+##Arguments:
+##  toClust, data.frame with data to cluster
+##  nClusts, vector of number of clusters, each run as separate kmeans 
+##  ... some additional arguments to be passed to clusters
+##Return:
+##  list of 
+##    kms, kmeans cluster output with length of nClusts
+##    ps, list of plots of the clusters against first 2 principle components
+runClusts = function(toClust,nClusts,print=TRUE,maxClusts=15,seed=12345,nstart=20,iter.max=100){
+  if(length(nClusts)>4){
+    warning("Using only first 4 elements of nClusts.")
+  }
+  kms=list(); ps=list();
+  for(i in 1:length(nClusts)){
+    kms[[i]] = kmeans(toClust,nClusts[i],iter.max = iter.max, nstart=nstart)
+    ps[[i]] = fviz_cluster(kms[[i]], geom = "point", data = toClust) + ggtitle(paste("k =",nClusts[i]))
+   
+  }
+  library(gridExtra)
+  if(print){
+    tmp = marrangeGrob(ps, nrow = 2,ncol=2)
+    print(tmp)
+  }
+  list(kms=kms,ps=ps)
+}
+
+##Plots a kmeans cluster as three plot report
+##  pie chart with membership percentages
+##  ellipse plot that indicates cluster definitions against principle components
+##  barplot of the cluster means
+plotClust = function(km,toClust,discPlot=FALSE){
+  nc = length(km$size)
+  if(discPlot){par(mfrow=c(2,2))}
+  else {par(mfrow=c(3,1))}
+  percsize = paste(1:nc," = ",format(km$size/sum(km$size)*100,digits=2),"%",sep="")
+  pie(km$size,labels=percsize,col=1:nc)
+  
+  clusplot(toClust, km$cluster, color=TRUE, shade=TRUE,
+           labels=2, lines=0,col.clus=1:nc); #plot clusters against principal components
+  
+  if(discPlot){
+    plotcluster(toClust, km$cluster,col=km$cluster); #plot against discriminant functions ()
+  }
+  rng = range(km$centers)
+  dist = rng[2]-rng[1]
+  locs = km$centers+.05*dist*ifelse(km$centers>0,1,-1)
+  bm = barplot(km$centers,beside=TRUE,col=1:nc,main="Cluster Means",ylim=rng+dist*c(-.1,.1))
+  text(bm,locs,formatC(km$centers,format="f",digits=1))
+}
+```
+
+## B.2)Test at least two cluster analysis schemes (i.e., number of clusters) and select the best one in your view.
+```{r}
+Checks = clustTest(partutility)
+clusts = runClusts(partutility,c(2,3,4,5))
+plotClust(clusts[[1]][[2]],partutility)
+
+## decided to use three clusters, see explanations below
+## demographics of each cluster 
+clustfinal = clusts[[1]][[2]]
+respondentData$cluster = clustfinal$cluster
+
+cluster1 = respondentData[respondentData$cluster==1,]
+sum(cluster1$age==1)/nrow(cluster1)
+sum(cluster1$gender==1)/nrow(cluster1)
+
+cluster2 = respondentData[respondentData$cluster==2,]
+sum(cluster2$age==1)/nrow(cluster2)
+sum(cluster2$gender==1)/nrow(cluster2)
+
+cluster3 = respondentData[respondentData$cluster==3,]
+sum(cluster3$age==1)/nrow(cluster3)
+sum(cluster3$gender==1)/nrow(cluster3)
+
+############################
+## Justify this decision  ##
+############################
+#Can use either cluster of 2 groups or cluster of 3 groups. It would be ideal to choose the 
+#clustering scheme that maximizes the differences of the cluster but also minizimes the differences
+#of the individuals within a particular cluster. For that reason, it is not ideal to use a clustering
+#of 2 groups, as we observe that one of the clusters appears to have 2 sub segments. With 3 clusters,
+#one can target the preferences of each cluster, thus more accurately targetting the preferences of each #individual within the cluster. Moreover, observing the Total Within Sum of Squares and Average
+#Silhouette Width, it is statistically sound to propose a clustering scheme with 3 groups.
+
+```
+## B.3)Interpret the segments in the chosen scheme and identify the ideal product for each segment
+## #################
+## Segment 1: Older Boys (.40)
+## Only segment that prefers bouncing, Strong preference for racing style
+## No real preference for size, will test both sizes
+## Age: 2:   .3875      Gender: M: .61
+## Age: 3-4: .6125      Gender: F: .39
+## Ideal Products:
+## 1. 18" Bouncing Racing , Low Price
+## 2. 26" Bouncing Racing , Low Price
+## ########
+## Segment 2: Younger Children (.26)
+## Only segment that prefers small, No preference for style
+## Age: 2:   .74      Gender: M: .55
+## Age: 3-4: .26      Gender: F: .45
+## Ideal Products:
+## 1. 18" Rocking Glamour , Low Price
+## 2. 18" Rocking Racing , Low Price
+## ########
+## Segment 3: Girls (.34)
+## Only segment that prefers big, No preference for motion
+## Age: 2:   .44      Gender: M: .21
+## Age: 3-4: .56    Gender: F: .79
+## Ideal Products:
+## 1. 26" Rocking Glamour , Low Price
+## 2. 26" Bouncing Glamour , Low Price
+## #################
+
+
+#### Part C ####
+## C. Conduct a priori segmentation.
+```{r}
+prioridf = merge(respondentData,conjointData,by = 'ID')
+summary(lm(ratings~price*age+size*age+motion*age+style*age,data=prioridf))
+summary(lm(ratings~price*gender+size*gender+motion*gender+style*gender,data=prioridf))
+
+######################
+## Segmenting on Age ##
+## Will discuss the interaction between age and the 4 attributes, some attributes are reflective of the 
+## parent and others of the children
+## Interactions will focus on older children: 2 year olds are the baseline
+## Price*Age: A bit more price sensative than for 2 year olds
+## Size*Age: Older kids prefer bigger horsers
+## Motion*Age: Older kids prefer bouncing motion
+## Style*Age: Effect is very minute, preference between style for different ages is negligible
+
+## Segmenting on Gender ##
+## Will discuss the interaction between gender and the 4 attributes, some attributes are reflective of 
+## the parent and others of the children
+## Interactions will focus on females: male is the baseline
+## Price*Gender: Less price sensative than males(i.e parents with males)
+## Size*Gender: Female prefers bigger horses
+## Motion*Gender: Female prefer rocking motion
+## Style*Gender: Female definitely prefers glamour 
+######################
+```
+
+#### Part D ####
+## D.Simulate market shares for different product-line scenarios
+```{r}
+## prepare dataframe to calculate market shares
+mktshare <- data.frame(matrix(0, ncol = 16, nrow = 200))
+ranking = c(1:16)
+for (i in 1:200){
+    data=conjointData[(conjointData[,1]==i),]
+    mktshare[i,rev(order(data$ratings))]=ranking
+}
+colnames(mktshare) <-c(1:16)
+
+## function for market share calculation
+summktshare = function(scenario,fulldata){
+  data = fulldata[,scenario]
+  df = data.frame()
+  for (i in 1:nrow(data)){
+    x = data[i,]
+    x = as.data.frame(x)
+    if (length(which(x==min(x))) > 1){  # if tie
+      x[which(x==min(x))] = 1/(length(which(x==min(x))))
+      x[-which(x==min(x))] = 0      
+    }else{                              # if no tie
+      x[which(x==min(x))] = 1
+      x[-which(x==min(x))] = 0
+    }
+    df = rbind(df,x)
+  }
+  return(apply(df,2,sum)/nrow(df))
+}
+
+## Simulate market share for two/three profiles
+twoprofiles = read.csv('2profiles.csv',stringsAsFactors = F)
+threeprofiles = read.csv('3profiles.csv',stringsAsFactors = F)
+
+capture.output(
+  for (i in 1:nrow(twoprofiles)){
+    for (j in 1:ncol(twoprofiles)){
+      x = unlist(strsplit(twoprofiles[i,j],split = ','))
+      print(summktshare(x,mktshare))
+      
+    }
+  }
+,file = "twopktshr.txt")
+
+capture.output(
+  for (i in 1:nrow(threeprofiles)){
+    for (j in 1:ncol(threeprofiles)){
+      x = unlist(strsplit(threeprofiles[i,j],split = ','))
+      print(summktshare(x,mktshare))
+    }
+  }
+,file = "threepnktshr.txt")
+
+## Save market share simulation to .txt file for further profit calculation in Excel.
+```
